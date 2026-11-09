@@ -38,11 +38,11 @@ export async function operation(name: string, total: number, work: (signal: Abor
         if (!showCompletion) view.node.remove();
     } catch (error) { finish(id, controller.signal.aborted ? t("common.cancelled") : error instanceof Error ? errorText(error) : t("common.failed")); throw error; }
 }
-export async function upload(path: string, file: File, signal: AbortSignal, unique = false, progress?: (loaded: number) => void): Promise<string> {
+export async function upload(path: string, file: File, signal: AbortSignal, unique = false, progress?: (loaded: number) => void, hostId?: string): Promise<string> {
     signal.throwIfAborted();
     return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest(), abort = () => xhr.abort();
-        xhr.open('POST', `/api/upload?path=${encodeURIComponent(path)}&unique=${unique}`);
+        xhr.open('POST', `/api/upload?path=${encodeURIComponent(path)}&unique=${unique}${hostId ? `&host=${encodeURIComponent(hostId)}` : ''}`);
         for (const [name, value] of Object.entries(requestHeaders())) xhr.setRequestHeader(name, value);
         xhr.setRequestHeader('X-Tuxee-Size', String(file.size));
         xhr.upload.onprogress = event => { if (event.lengthComputable) progress?.(Math.min(event.loaded, file.size)); };
@@ -65,7 +65,7 @@ type UploadItem = { name: string; file?: File; children?: UploadItem[] };
 type UploadJob = { parent: string; item: UploadItem; root?: number };
 let uploadConcurrency = 4;
 export function setUploadConcurrency(value = 4) { uploadConcurrency = value; }
-export async function uploadBatch(destination: string, sources: UploadSource[], owner: HTMLElement, lifetime: AbortSignal, ensureDirectory = false): Promise<DraggedFile[]> {
+export async function uploadBatch(destination: string, sources: UploadSource[], owner: HTMLElement, lifetime: AbortSignal, ensureDirectory = false, hostId?: string): Promise<DraggedFile[]> {
     if (!sources.length) return [];
     lifetime.throwIfAborted();
     const concurrency = uploadConcurrency;
@@ -101,12 +101,12 @@ export async function uploadBatch(destination: string, sources: UploadSource[], 
         signal.throwIfAborted();
         let path = join(parent, item.name);
         if (item.children) {
-            ({ path } = await api<{ path: string }>('/files', 'POST', { operation: 'mkdir', path, unique: true }, signal));
+            ({ path } = await api<{ path: string }>('/files', 'POST', { operation: 'mkdir', path, unique: true, hostId }, signal));
             directories.add(path.slice(0, path.lastIndexOf('/')) || '/');
             for (const child of item.children) queue.push({ parent: path, item: child });
         } else {
             let loaded = 0;
-            path = await upload(path, item.file!, signal, true, value => { sent += value - loaded; loaded = value; update(); });
+            path = await upload(path, item.file!, signal, true, value => { sent += value - loaded; loaded = value; update(); }, hostId);
             directories.add(path.slice(0, path.lastIndexOf('/')) || '/');
             sent += item.file!.size - loaded; completed++; update();
         }
@@ -116,7 +116,7 @@ export async function uploadBatch(destination: string, sources: UploadSource[], 
         const items: UploadItem[] = [];
         for (const source of sources) items.push(await collect(source));
         signal.throwIfAborted(); update();
-        if (ensureDirectory) await api('/files', 'POST', { operation: 'mkdir', path: destination, parents: true }, signal);
+        if (ensureDirectory) await api('/files', 'POST', { operation: 'mkdir', path: destination, parents: true, hostId }, signal);
         const uploaded: DraggedFile[] = [];
         items.forEach((item, root) => queue.push({ parent: destination, item, root }));
         while (queue.length || active.size) {
@@ -172,7 +172,7 @@ export function prepareDownloads() {
         }
     })();
 }
-export async function download(path: string, name: string, owner?: HTMLElement) {
+export async function download(path: string, name: string, owner?: HTMLElement, hostId?: string) {
     const supported = await prepareDownloads(), id = newID();
     if (supported) {
         await new Promise<void>((resolve, reject) => {
@@ -183,7 +183,7 @@ export async function download(path: string, name: string, owner?: HTMLElement) 
         create(id, t("transfers.downloading", { name }), () => navigator.serviceWorker.controller?.postMessage({ cancel: id }), owner);
     }
     const link = el('a');
-    link.href = `/api/download?path=${encodeURIComponent(path)}&transfer=${id}`;
+    link.href = `/api/download?path=${encodeURIComponent(path)}&transfer=${id}${hostId ? `&host=${encodeURIComponent(hostId)}` : ''}`;
     // Content-Disposition starts the download; the download attribute bypasses service workers in Chromium.
     document.body.append(link);
     link.click();

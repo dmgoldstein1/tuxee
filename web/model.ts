@@ -2,11 +2,13 @@ import { t } from './i18n';
 import type { ShortcutBindings } from './shortcuts';
 export type Kind = 'files' | 'terminal';
 export type CommandShortcut = { name: string; command: string };
+export type Remote = { id: string; name: string; host: string; user: string; port: number; mode: string };
 export type Panel = {
     id: string;
     kind: Kind;
     path: string;
     terminal?: string;
+    hostId?: string;
     pinned?: boolean;
     minimized?: boolean;
     x: number;
@@ -35,6 +37,7 @@ export type Settings = {
     defaultDirectory?: string;
     serverName?: string;
     serverColor?: string;
+    remotes?: Remote[];
     terminalBackground?: string;
     terminalBackgroundLight?: string;
     terminalFontSize?: number;
@@ -62,6 +65,8 @@ export type TerminalInfo = {
     id: string;
     name: string;
     directory: string;
+    remoteId?: string;
+    remoteName?: string;
     pid: number;
     exited: boolean;
     attached: number;

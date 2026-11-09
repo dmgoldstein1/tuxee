@@ -6,7 +6,7 @@ Retained Linux PTYs and canonical display recovery.
 
 # Ownership
 
-Own session identity, process groups, bounded output, browser controller leases, and explicit termination. Shells use local PTYs without an SSH transport. Each session owns an optional lazy internal/desktop display and a reference to the manager's shared internal/audio runtime for its Linux UID. Prepare both environments before starting the shell. Close the display and release the audio reference after shell exit; explicit closure waits for that cleanup. All sessions for one UID receive the same PulseAudio endpoint, including when X11 is unavailable.
+Own session identity, process groups, bounded output, browser controller leases, and explicit termination. Local shells use local PTYs; agentless remote shells wrap an SSH client (`tailscale ssh` or OpenSSH over the tailnet) in a local PTY under the signed-in UID. Each local session owns an optional lazy internal/desktop display and a reference to the manager's shared internal/audio runtime for its Linux UID. Remote sessions have no keeper guardian, display or audio runtime; explicit closure still waits for SSH child cleanup.
 
 # Local Contracts
 

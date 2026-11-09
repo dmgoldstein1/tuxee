@@ -31,6 +31,7 @@ import (
 	"tuxee/internal/identity"
 	"tuxee/internal/monitor"
 	"tuxee/internal/processes"
+	"tuxee/internal/remotes"
 	"tuxee/internal/terminal"
 	"tuxee/internal/tlsmanager"
 	"tuxee/internal/update"
@@ -374,14 +375,44 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.URL.Path == "/api/update/apply" && r.Method == "POST":
 		s.updateOperation(w, r, session)
 	case r.URL.Path == "/api/metrics" && r.Method == "GET":
+		remote, err := s.remoteForRequest(r, session)
+		if err != nil {
+			failure(w, 400, err)
+			return
+		}
+		if remote != nil {
+			snapshot, err := remoteMetrics(r.Context(), session.user, remote)
+			if err != nil {
+				failure(w, 400, err)
+				return
+			}
+			jsonResponse(w, 200, snapshot)
+			return
+		}
 		jsonResponse(w, 200, s.monitor.Sample())
 	case r.URL.Path == "/api/system" && r.Method == "GET":
+		remote, err := s.remoteForRequest(r, session)
+		if err != nil {
+			failure(w, 400, err)
+			return
+		}
+		if remote != nil {
+			info, err := remoteSystemInfo(r.Context(), s.Version, session.user, remote)
+			if err != nil {
+				failure(w, 400, err)
+				return
+			}
+			jsonResponse(w, 200, info)
+			return
+		}
 		info, err := readSystemInfo(s.Version, session.user)
 		if err != nil {
 			failure(w, 500, i18n.New("backend.server.systemInformationIsUnavailable"))
 			return
 		}
 		jsonResponse(w, 200, info)
+	case r.URL.Path == "/api/remotes" && (r.Method == "GET" || r.Method == "PUT"):
+		s.remotesOperation(w, r, session)
 	case r.URL.Path == "/api/me" && r.Method == "GET":
 		s.settingsMu.Lock()
 		defer s.settingsMu.Unlock()
@@ -452,6 +483,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Columns   int    `json:"columns"`
 			Rows      int    `json:"rows"`
 			Command   string `json:"command"`
+			HostID    string `json:"hostId"`
 		}
 		if err := decode(w, r, &input); err != nil {
 			failure(w, 400, err)
@@ -489,7 +521,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		value, err := s.Terminals.Create(session.user, input.Directory, input.Name, input.Columns, input.Rows, input.Command, background, foreground, settings.ShellCommand, settings.UseTuxeePrompt == nil || *settings.UseTuxeePrompt, session.translations.Language)
+		var remote *remotes.Remote
+		if input.HostID != "" {
+			found := remotes.Lookup(settings.Remotes, input.HostID)
+			if found == nil {
+				failure(w, 400, i18n.New("backend.server.invalidRequestBody"))
+				return
+			}
+			snapshot := *found
+			remote = &snapshot
+			if input.Directory == "" || input.Directory == settings.defaultDirectory(session.user.Home) {
+				if home, err := remoteHomeDirectory(ctx, session.user, remote); err == nil && home != "" {
+					input.Directory = home
+				}
+			}
+		}
+		value, err := s.Terminals.CreateOnHost(session.user, remote, input.Directory, input.Name, input.Columns, input.Rows, input.Command, background, foreground, settings.ShellCommand, settings.UseTuxeePrompt == nil || *settings.UseTuxeePrompt, session.translations.Language)
 		if err != nil {
 			failure(w, 400, err)
 			return
@@ -630,6 +677,29 @@ func (s *Server) fileOperation(w http.ResponseWriter, r *http.Request, session *
 		failure(w, 400, i18n.New("backend.server.invalidFileOperation"))
 		return
 	}
+	if input.HostID != "" {
+		remote, err := remoteForID(r.Context(), session.user, input.HostID)
+		if err != nil || remote == nil {
+			failure(w, 400, i18n.New("backend.server.invalidRequestBody"))
+			return
+		}
+		if !s.fileSlot(w) {
+			return
+		}
+		defer func() { <-s.fileSlots }()
+		response, reader, err := remoteFileOperation(r.Context(), session.user, remote, input)
+		if err != nil {
+			failure(w, 400, err)
+			return
+		}
+		if reader != nil {
+			_ = reader
+			failure(w, 400, i18n.New("backend.server.invalidFileOperation"))
+			return
+		}
+		jsonResponse(w, 200, response)
+		return
+	}
 	if !s.fileSlot(w) {
 		return
 	}
@@ -654,6 +724,25 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, session *login) 
 		failure(w, 400, i18n.New("backend.server.uploadSizeLimit", i18n.Vars{"maxTiB": float64(maxUploadBytes) / (1 << 40)}))
 		return
 	}
+	if host := r.URL.Query().Get("host"); host != "" {
+		remote, err := remoteForID(r.Context(), session.user, host)
+		if err != nil || remote == nil {
+			failure(w, 400, i18n.New("backend.server.invalidRequestBody"))
+			return
+		}
+		if !s.fileSlot(w) {
+			return
+		}
+		defer func() { <-s.fileSlots }()
+		r.Body = http.MaxBytesReader(w, r.Body, size+1)
+		dest, err := remoteUploadStream(r.Context(), session.user, remote, r.URL.Query().Get("path"), size, r.Body)
+		if err != nil {
+			failure(w, 400, err)
+			return
+		}
+		jsonResponse(w, 200, map[string]string{"path": dest})
+		return
+	}
 	if !s.fileSlot(w) {
 		return
 	}
@@ -674,6 +763,30 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request, session *login) 
 func (s *Server) download(w http.ResponseWriter, r *http.Request, session *login) {
 	if token := r.URL.Query().Get("archive"); token != "" {
 		s.downloadArchive(w, r, session, token)
+		return
+	}
+	if host := r.URL.Query().Get("host"); host != "" {
+		remote, err := remoteForID(r.Context(), session.user, host)
+		if err != nil || remote == nil {
+			failure(w, 400, i18n.New("backend.server.invalidRequestBody"))
+			return
+		}
+		if !s.fileSlot(w) {
+			return
+		}
+		defer func() { <-s.fileSlots }()
+		stream, entry, err := remoteDownloadStream(r.Context(), session.user, remote, r.URL.Query().Get("path"))
+		if err != nil {
+			failure(w, 400, err)
+			return
+		}
+		defer stream.Close()
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filepath.Base(entry.Path)}))
+		if entry.Size > 0 {
+			w.Header().Set("Content-Length", strconv.FormatInt(entry.Size, 10))
+		}
+		_, _ = io.Copy(w, stream)
 		return
 	}
 	if !s.fileSlot(w) {

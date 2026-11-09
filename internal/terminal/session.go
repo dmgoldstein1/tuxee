@@ -18,6 +18,7 @@ import (
 	"tuxee/internal/files"
 	"tuxee/internal/i18n"
 	"tuxee/internal/keeper"
+	"tuxee/internal/remotes"
 
 	"github.com/creack/pty"
 	"golang.org/x/sys/unix"
@@ -64,6 +65,8 @@ type Info struct {
 	ID           string     `json:"id"`
 	Name         string     `json:"name"`
 	Directory    string     `json:"directory"`
+	RemoteID     string     `json:"remoteId,omitempty"`
+	RemoteName   string     `json:"remoteName,omitempty"`
 	PID          int        `json:"pid"`
 	Exited       bool       `json:"exited"`
 	Attached     int        `json:"attached"`
@@ -89,6 +92,7 @@ type Session struct {
 	mu             sync.Mutex
 	manager        *Manager
 	user           identity.User
+	remote         *remotes.Remote
 	info           Info
 	cmd            *exec.Cmd
 	pty            *os.File
@@ -144,6 +148,10 @@ func newID() string {
 }
 
 func (m *Manager) Create(user identity.User, directory, name string, columns, rows int, command, background, foreground, shell string, prompt bool, language string) (*Session, error) {
+	return m.CreateOnHost(user, nil, directory, name, columns, rows, command, background, foreground, shell, prompt, language)
+}
+
+func (m *Manager) CreateOnHost(user identity.User, remote *remotes.Remote, directory, name string, columns, rows int, command, background, foreground, shell string, prompt bool, language string) (*Session, error) {
 	defer m.PruneHistory(user)
 	if !validSize(columns, rows) {
 		return nil, i18n.New("backend.terminal.invalidTerminalDimensions")
@@ -172,8 +180,9 @@ func (m *Manager) Create(user identity.User, directory, name string, columns, ro
 		return nil, i18n.New("backend.terminal.closeUnusedTerminalsBeforeCreatingAnother")
 	}
 	id := newID()
+	remoteMode := remote != nil
 	var guardian *keeper.Client
-	if m.HistoryInstance != "" {
+	if m.HistoryInstance != "" && !remoteMode {
 		var err error
 		guardian, err = keeper.Start(user, id, m.HistoryInstance)
 		if err != nil {
@@ -195,30 +204,39 @@ func (m *Manager) Create(user identity.User, directory, name string, columns, ro
 		engine.Close()
 		return nil, err
 	}
-	audioEnv, releaseAudio, err := m.Audio.EnvironmentFor(user, m.HistoryInstance)
-	if err != nil {
-		engine.Close()
-		return nil, err
+	var audioEnv []string
+	releaseAudio := func() {}
+	if !remoteMode {
+		var err error
+		audioEnv, releaseAudio, err = m.Audio.EnvironmentFor(user, m.HistoryInstance)
+		if err != nil {
+			engine.Close()
+			return nil, err
+		}
 	}
 	var display *desktop.Display
-	if guardian != nil {
-		display, err = desktop.PreparePersistent(user, guardian)
-	} else {
-		display, err = desktop.Prepare(user)
-	}
-	if err != nil {
-		releaseAudio()
-		engine.Close()
-		return nil, err
+	if !remoteMode {
+		if guardian != nil {
+			display, err = desktop.PreparePersistent(user, guardian)
+		} else {
+			display, err = desktop.Prepare(user)
+		}
+		if err != nil {
+			releaseAudio()
+			engine.Close()
+			return nil, err
+		}
 	}
 	created := false
 	defer func() {
 		if !created {
-			display.Close()
+			if display != nil {
+				display.Close()
+			}
 			releaseAudio()
 		}
 	}()
-	cmd, releaseShell, err := prepareShell(user, shell, command, prompt)
+	cmd, releaseShell, err := prepareRemoteShell(user, remote, shell, command, prompt)
 	if err != nil {
 		engine.Close()
 		return nil, err
@@ -253,7 +271,15 @@ func (m *Manager) Create(user identity.User, directory, name string, columns, ro
 	cmd.SysProcAttr.Setsid = true
 	cmd.SysProcAttr.Setctty = true
 	cmd.SysProcAttr.Ctty = 0
-	s := &Session{Display: display, manager: m, user: user, info: Info{ID: id, Name: name, Directory: directory}, cmd: cmd, pty: master, engine: engine, views: make(map[string]*Attachment), input: make(chan inputFrame, 16), done: make(chan struct{}), exited: make(chan struct{}), keeper: guardian, readDone: make(chan struct{}), releaseShell: releaseShell, releaseAudio: releaseAudio, shellDirectory: cmd.Args[len(cmd.Args)-1]}
+	shellDir := directory
+	if remote == nil && len(cmd.Args) > 0 {
+		shellDir = cmd.Args[len(cmd.Args)-1]
+	}
+	s := &Session{Display: display, manager: m, user: user, remote: remote, info: Info{ID: id, Name: name, Directory: directory}, cmd: cmd, pty: master, engine: engine, views: make(map[string]*Attachment), input: make(chan inputFrame, 16), done: make(chan struct{}), exited: make(chan struct{}), keeper: guardian, readDone: make(chan struct{}), releaseShell: releaseShell, releaseAudio: releaseAudio, shellDirectory: shellDir}
+	if remote != nil {
+		s.info.RemoteID = remote.ID
+		s.info.RemoteName = remote.Name
+	}
 	s.background, s.foreground, s.used = background, foreground, command != ""
 	if s.info.Name == "" {
 		s.info.Name = "Terminal"
@@ -424,15 +450,37 @@ func (s *Session) Info() Info {
 }
 
 // WorkingDirectory reads only the still-owned, unreaped terminal process.
+// Remote sessions resolve via pwd over SSH; local sessions use /proc/PID/cwd.
 func (s *Session) WorkingDirectory(ctx context.Context) (string, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed || s.info.Exited {
+		s.mu.Unlock()
 		return "", i18n.New("terminal.closed")
+	}
+	remote := s.remote
+	user := s.user
+	pid := s.info.PID
+	s.mu.Unlock()
+	if remote != nil {
+		snapshot := *remote
+		out, err := remotes.Exec(ctx, user.Command, &snapshot, "pwd")
+		if err != nil {
+			return "", err
+		}
+		path := strings.TrimSpace(out)
+		if !filepath.IsAbs(path) || strings.ContainsRune(path, 0) {
+			return "", os.ErrPermission
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.closed || s.info.Exited || s.remote == nil || s.remote.ID != snapshot.ID {
+			return "", i18n.New("terminal.closed")
+		}
+		return path, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	response, err := files.Run(ctx, s.user, files.Request{Operation: "stat", Path: fmt.Sprintf("/proc/%d/cwd", s.info.PID)})
+	response, err := files.Run(ctx, user, files.Request{Operation: "stat", Path: fmt.Sprintf("/proc/%d/cwd", pid)})
 	if err != nil {
 		return "", err
 	}

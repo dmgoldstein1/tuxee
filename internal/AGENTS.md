@@ -12,7 +12,7 @@ This document owns this subtree.
 
 Tuxee-owned errors that reach the browser carry `i18n.Message` keys and named variables through HTTP, worker and terminal boundaries. Preserve causes and diagnostic strings for logs/API compatibility; never flatten structured errors before transport. [i18n/AGENTS.md](i18n/AGENTS.md) owns the shared catalogs and checker. External command/library diagnostics, user data and shell output remain literal data.
 
-User filesystem operations, process discovery/signals and browser-requested updates execute in credential-dropped child processes. Shared Go server identity never changes. Terminal lifetime is separate from authentication/view lifetime. WebSocket views attach directly to local PTYs; there is no SSH listener. TLS continues with a persisted local CA when public issuance is unavailable.
+User filesystem operations, process discovery/signals and browser-requested updates execute in credential-dropped child processes. Shared Go server identity never changes. Terminal lifetime is separate from authentication/view lifetime. WebSocket views attach directly to local PTYs or to local PTY-wrapped SSH clients for agentless remotes; there is no inbound SSH listener. TLS continues with a persisted local CA when public issuance is unavailable.
 
 # Work Guidance
 
@@ -34,6 +34,7 @@ Run `go test ./internal/...`; use `go test -race ./internal/...` for lifecycle a
 
 - [identity/AGENTS.md](identity/AGENTS.md): PAM authentication and Linux process credentials.
 - [files/AGENTS.md](files/AGENTS.md): Credential-dropped filesystem workers and settings.
+- [remotes/AGENTS.md](remotes/AGENTS.md): Agentless Tailscale SSH targets and bounded remote execution.
 - [tlsmanager/AGENTS.md](tlsmanager/AGENTS.md): ACME and local-CA certificate lifecycle.
 - [monitor/AGENTS.md](monitor/AGENTS.md): Cached Linux CPU, memory, swap, filesystem and network metrics with container accounting.
 - [processes/AGENTS.md](processes/AGENTS.md): On-demand process trees, bounded grouping, stable user-scoped signals and runtime signal-permission checks.

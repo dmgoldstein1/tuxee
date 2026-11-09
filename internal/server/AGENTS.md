@@ -6,9 +6,11 @@ Authenticated HTTP API, application sessions, per-user settings, and WebSocket t
 
 # Ownership
 
-Own HTTP routing and session revocation. Delegate filesystem syscalls to files, account checks to identity, process discovery/signals to processes, and all terminal lifetime/control to terminal.
+Own HTTP routing and session revocation. Delegate filesystem syscalls to files, account checks to identity, process discovery/signals to processes, and all terminal lifetime/control to terminal. Own the per-user agentless remote-target registry (`PUT/GET /api/remotes`) and remote-aware routing for terminals, files, processes, metrics and system endpoints.
 
 # Local Contracts
+
+Agentless remotes are user-owned data in the existing per-user settings (`remotes` array validated by `internal/remotes`); there is no server-side secret store and no CLI-managed state file. `POST /api/terminals` accepts an optional `hostId` resolving to a saved remote; remote shells wrap `tailscale ssh` or OpenSSH (over the tailnet) in a local PTY under the signed-in UID with no keeper guardian, display or audio runtime. Remote display routes return the existing display-unavailable error. `GET /api/system` and `GET /api/metrics` accept `?host=` for remote readings; process snapshots accept `?host=` with per-snapshot host binding for signals. File operations accept `hostId` for core list/stat/mkdir/delete/chmod/rename/move/copy/read/download/upload over SSH; trash, archives, editor staging and recursive size remain local-only and return the existing invalid-operation error.
 
 `POST /api/terminals` assigns an omitted/empty name from the frozen login catalog’s `term.defaultName` (`Terminal {count}`), starting at 1 and skipping names in the Linux user’s live/unclosed archive inventory. Use the existing settings/creation lock so concurrent requests cannot claim the same default. Explicit names, including reset replacements, remain exact; closed archives do not reserve numbers. Preserve inventory errors rather than guessing a name.
 

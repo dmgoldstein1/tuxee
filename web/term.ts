@@ -456,7 +456,7 @@ export class TerminalView implements View {
             try { target = this.display.dropTarget(point); } catch (error) { this.notice(error); return; }
         } else if (toDrawer) this.drawer.focus(); else this.term.focus();
         let uploaded;
-        try { uploaded = await uploadBatch(join(this.hooks.user.home, 'uploads'), sources, this.root, this.events.signal, true); }
+        try { uploaded = await uploadBatch(join(this.hooks.user.home, 'uploads'), sources, this.root, this.events.signal, true, this.panel.hostId); }
         catch { return; } // The batch indicator owns upload errors and cancellation.
         if (!uploaded.length) return;
         if (target) { try { await this.display.dropFiles(uploaded, target); } catch (error) { this.notice(error); } return; }
@@ -583,7 +583,7 @@ export class TerminalView implements View {
         else {
             let pending = creating.get(this.panel.id);
             if (!pending) {
-                pending = api<TerminalInfo>('/terminals', 'POST', { directory: this.panel.path, name: this.name, columns: 80, rows: 24, command }).then(async (value) => { this.panel.terminal = value.id; await this.hooks.changed(true); return value; }).finally(() => creating.delete(this.panel.id));
+                pending = api<TerminalInfo>('/terminals', 'POST', { directory: this.panel.path, name: this.name, columns: 80, rows: 24, command, hostId: this.panel.hostId }).then(async (value) => { this.panel.terminal = value.id; await this.hooks.changed(true); return value; }).finally(() => creating.delete(this.panel.id));
                 creating.set(this.panel.id, pending);
             }
             info = await pending;

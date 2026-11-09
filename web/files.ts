@@ -249,7 +249,7 @@ export class FileView implements View {
     private async restoreEditor() {
         await this.hooks.changed(true);
         if (this.disposed || this.request || this.inspector) return;
-        const { editor } = await api('/files', 'POST', { operation: 'editor-load', editorId: this.panel.id }, this.events.signal);
+        const { editor } = await api('/files', 'POST', { operation: 'editor-load', editorId: this.panel.id, hostId: this.panel.hostId }, this.events.signal);
         if (this.disposed || this.request || this.inspector) return;
         if (editor) await this.openFile({ path: editor.path, name: editor.path.split('/').pop(), directory: false } as Entry, undefined, undefined, undefined, editor);
         else await this.navigate(this.pathInput.value);
@@ -271,7 +271,7 @@ export class FileView implements View {
         this.request?.abort();
         const request = this.request = new AbortController();
         try {
-            const { entry } = await api('/files', 'POST', { operation: 'stat', path }, request.signal);
+            const { entry } = await api('/files', 'POST', { operation: 'stat', path, hostId: this.panel.hostId }, request.signal);
             if (request.signal.aborted || this.disposed) return false;
             if (entry.directory) {
                 let opened = false;
@@ -316,7 +316,7 @@ export class FileView implements View {
         this.status.textContent = t("common.loading");
         this.list.classList.add('loading');
         try {
-            const response = await api('/files', 'POST', { operation: path === trashPath ? 'trash-list' : 'list', path }, request.signal);
+            const response = await api('/files', 'POST', { operation: path === trashPath ? 'trash-list' : 'list', path, hostId: this.panel.hostId }, request.signal);
             if (this.disposed || request.signal.aborted)
                 return;
             this.panel.path = response.path;
@@ -639,13 +639,13 @@ export class FileView implements View {
     private single() { const values = this.chosen(); if (values.length !== 1)
         throw new Error(t("files.selectOneItemFirst")); return values[0]; }
     private async mkdir() { const name = await ask(t("files.newFolder"), t("files.folderName")); if (!name)
-        return; this.checkName(name); await api('/files', 'POST', { operation: 'mkdir', path: join(this.panel.path, name) }); await this.refresh(); }
+        return; this.checkName(name); await api('/files', 'POST', { operation: 'mkdir', path: join(this.panel.path, name), hostId: this.panel.hostId }); await this.refresh(); }
     private async createFile() { const name = await ask(t("files.newFile"), t("files.fileName")); if (!name)
-        return; this.checkName(name); await upload(join(this.panel.path, name), new File([], name), this.events.signal); await this.refresh(); }
+        return; this.checkName(name); await upload(join(this.panel.path, name), new File([], name), this.events.signal, false, undefined, this.panel.hostId); await this.refresh(); }
     private checkName(name: string) { if (name === '.' || name === '..' || name.includes('/') || name.includes('\0'))
         throw new Error(t("files.useAFilenameWithoutSlashes")); }
     private async rename() { const entry = this.single(), name = await ask(t("common.rename"), t("files.newName"), entry.name); if (!name || name === entry.name)
-        return; this.checkName(name); await api('/files', 'POST', { operation: 'rename', path: entry.path, destination: join(this.panel.path, name) }); await this.refresh(); }
+        return; this.checkName(name); await api('/files', 'POST', { operation: 'rename', path: entry.path, destination: join(this.panel.path, name), hostId: this.panel.hostId }); await this.refresh(); }
     private async remove(permanent = false) {
         const entries = this.chosen(), inTrash = this.inTrash;
         if (!entries.length)
@@ -700,7 +700,7 @@ export class FileView implements View {
         const entries = this.chosen();
         if (!entries.length) throw new Error(t("files.selectFilesOrFoldersToDownload"));
         if (entries.length > 1 || entries[0].directory) return downloadArchive(this.panel.path, entries.map(entry => entry.path), this.root);
-        await download(entries[0].path, entries[0].name, this.root);
+        await download(entries[0].path, entries[0].name, this.root, this.panel.hostId);
     }
     private async transferPrompt(operation: 'copy' | 'move') { const entries = this.chosen(); if (!entries.length)
         throw new Error(t("file.clipboard.selectFilesFirst")); const path = await ask(t(operation === 'copy' ? 'files.copySelected' : 'files.moveSelected'), t("files.destinationDirectoryAbsolutePath"), this.panel.path); if (path)
@@ -716,7 +716,7 @@ export class FileView implements View {
         const results = [];
         await trackOperation(name, request.paths.length || 1, async (signal, progress) => {
             let response;
-            try { response = await api('/files', 'POST', request, AbortSignal.any([signal, this.events.signal])); }
+            try { response = await api('/files', 'POST', { hostId: this.panel.hostId, ...request }, AbortSignal.any([signal, this.events.signal])); }
             catch (error) {
                 // A worker failure can lose the results after some moves already committed.
                 for (const path of request.paths) settled?.(path, error instanceof APIError ? new Error(error.message) : error);
@@ -780,7 +780,7 @@ export class FileView implements View {
     private async archiveDialog(extract = false, entry?: Entry) {
         const entries = extract ? [entry || this.single()] : this.chosen();
         if (!entries.length) throw new Error(t("file.clipboard.selectFilesFirst"));
-        const capabilities = await api('/files', 'POST', { operation: 'archive-formats', path: this.panel.path });
+        const capabilities = await api('/files', 'POST', { operation: 'archive-formats', path: this.panel.path, hostId: this.panel.hostId });
         const content = el('form', 'form'), filename = el('input'), format = el('select'), password = el('input');
         scopeNotifications(content, this.root);
         const base = entries.length === 1 ? entries[0].name.replace(archiveExtension, '') || t('files.archive') : t('files.archive');
@@ -896,7 +896,7 @@ export class FileView implements View {
     }
     private async uploadFiles(files: UploadSource[], point?: { clientX: number; clientY: number }) {
         try {
-            const uploaded = await uploadBatch(this.panel.path, files, this.root, this.events.signal);
+            const uploaded = await uploadBatch(this.panel.path, files, this.root, this.events.signal, false, this.panel.hostId);
             if (!this.disposed && point) animateFileDrop(uploaded, point, this.list);
         }
         catch { /* The batch indicator owns upload errors and cancellation. */ }
