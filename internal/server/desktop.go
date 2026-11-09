@@ -17,6 +17,10 @@ import (
 
 func (s *Server) terminalDisplay(w http.ResponseWriter, r *http.Request, value *terminal.Session, action string) {
 	gui := value.Display
+	if gui == nil {
+		failure(w, 409, i18n.New("backend.server.displayIsNotRunning"))
+		return
+	}
 	state := gui.State()
 	if state == nil || !state.Ready {
 		failure(w, 409, i18n.New("backend.server.displayIsNotRunning"))

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 	"tuxee/internal/i18n"
+	"tuxee/internal/remotes"
 
 	"tuxee/internal/processes"
 )
@@ -12,10 +13,21 @@ import (
 type processSnapshot struct {
 	id        string
 	allowCore bool
+	hostID    string
+	remote    *remoteHostRef
 	data      *processes.Snapshot
 	view      processes.View
 	expiry    *time.Timer
 	stop      func() bool
+}
+
+// remoteHostRef is a minimal snapshot of the resolved remote for signalling.
+type remoteHostRef struct {
+	id   string
+	host string
+	user string
+	port int
+	mode string
 }
 type processAction struct {
 	Snapshot  string   `json:"snapshot"`
@@ -44,6 +56,26 @@ func (s *Server) processOperation(w http.ResponseWriter, r *http.Request, sessio
 		}
 		if sortBy != "ram" && sortBy != "cpu" {
 			failure(w, 400, i18n.New("backend.server.invalidProcessSort"))
+			return
+		}
+		remote, remoteID, err := resolveProcessRemote(r, session)
+		if err != nil {
+			failure(w, 400, err)
+			return
+		}
+		if remote != nil {
+			snapshot, err := remoteProcessSnapshot(r.Context(), session.user, remote, sortBy)
+			if err != nil {
+				failure(w, 400, err)
+				return
+			}
+			current := &processSnapshot{id: randomToken(), allowCore: allowCore, hostID: remoteID, remote: &remoteHostRef{id: remote.ID, host: remote.Host, user: remote.User, port: remote.Port, mode: remote.Mode}, data: snapshot, view: snapshot.View(sortBy)}
+			storeProcessSnapshot(session, current)
+			jsonResponse(w, 200, struct {
+				processes.View
+				Snapshot  string `json:"snapshot"`
+				AllowCore bool   `json:"allowCore"`
+			}{current.view, current.id, current.allowCore})
 			return
 		}
 		select {
@@ -119,6 +151,19 @@ func (s *Server) processOperation(w http.ResponseWriter, r *http.Request, sessio
 		failure(w, 429, i18n.New("backend.server.processSignallingIsBusy"))
 		return
 	}
+	if current.remote != nil {
+		remote, err := remoteForID(r.Context(), session.user, current.hostID)
+		if err != nil || remote == nil {
+			failure(w, 409, i18n.New("backend.server.processSnapshotExpiredRefresh"))
+			return
+		}
+		if err := remoteSignalProcesses(r.Context(), session.user, remote, refs, input.Signal); err != nil {
+			failure(w, 400, err)
+			return
+		}
+		jsonResponse(w, 200, map[string]any{"results": []processes.Result{}})
+		return
+	}
 	output, err := processes.Run(r.Context(), session.user, processes.Request{Operation: "signal", Targets: refs, Signal: input.Signal, AllowCore: input.AllowCore})
 	if err != nil {
 		failure(w, 400, err)
@@ -164,4 +209,36 @@ func (s *login) clearProcesses(id string) {
 			current.stop()
 		}
 	}
+}
+
+func resolveProcessRemote(r *http.Request, session *login) (*remotes.Remote, string, error) {
+	id := r.URL.Query().Get("host")
+	if id == "" {
+		return nil, "", nil
+	}
+	remote, err := remoteForID(r.Context(), session.user, id)
+	if err != nil {
+		return nil, "", err
+	}
+	if remote == nil {
+		return nil, "", i18n.New("backend.server.invalidRequestBody")
+	}
+	return remote, remote.ID, nil
+}
+
+func storeProcessSnapshot(session *login, current *processSnapshot) {
+	session.processMu.Lock()
+	if old := session.processSnapshot; old != nil {
+		if old.expiry != nil {
+			old.expiry.Stop()
+		}
+		if old.stop != nil {
+			old.stop()
+		}
+	}
+	session.processSnapshot = current
+	id := current.id
+	current.expiry = time.AfterFunc(30*time.Minute, func() { session.clearProcesses(id) })
+	current.stop = context.AfterFunc(session.ctx, func() { session.clearProcesses(id) })
+	session.processMu.Unlock()
 }

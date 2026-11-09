@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"tuxee/internal/identity"
+	"tuxee/internal/remotes"
 )
 
 //go:embed shell-launch.sh
@@ -59,4 +60,19 @@ func prepareShell(user identity.User, shell, command string, prompt bool) (*exec
 	}
 	cmd := user.Command(context.Background(), "/bin/sh", "-c", shellLauncher, "tuxee-shell", shell, command, directory)
 	return cmd, cleanup, nil
+}
+
+// prepareRemoteShell builds a PTY-wrapped SSH client for agentless remotes.
+// The SSH child runs under the signed-in UID so existing Tailscale/SSH-agent
+// credentials apply; no passwords or keys are handled here.
+func prepareRemoteShell(user identity.User, remote *remotes.Remote, shell, command string, prompt bool) (*exec.Cmd, func(), error) {
+	if remote == nil {
+		return prepareShell(user, shell, command, prompt)
+	}
+	// Remote shells always run through the remote login shell; the local
+	// prompt scripts stay local-only to avoid leaking paths into the remote.
+	// The initial command is passed through so it runs once on the remote.
+	bin, args := remotes.ShellArgs(remote, shell, command)
+	cmd := user.Command(context.Background(), bin, args...)
+	return cmd, func() {}, nil
 }

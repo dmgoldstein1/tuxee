@@ -39,6 +39,7 @@ type Request struct {
 	Path        string          `json:"path,omitempty"`
 	Destination string          `json:"destination,omitempty"`
 	Mode        string          `json:"mode,omitempty"`
+	HostID      string          `json:"hostId,omitempty"`
 	Settings    json.RawMessage `json:"settings,omitempty"`
 	Size        int64           `json:"size,omitempty"`
 	Unique      bool            `json:"unique,omitempty"`

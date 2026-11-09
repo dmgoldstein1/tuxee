@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"tuxee/internal/i18n"
+	"tuxee/internal/remotes"
 	"unicode"
 	"unicode/utf16"
 
@@ -35,6 +36,7 @@ type Panel struct {
 	Kind      string `json:"kind"`
 	Path      string `json:"path"`
 	Terminal  string `json:"terminal,omitempty"`
+	HostID    string `json:"hostId,omitempty"`
 	Pinned    bool   `json:"pinned,omitempty"`
 	X         int    `json:"x"`
 	Y         int    `json:"y"`
@@ -73,6 +75,7 @@ type Settings struct {
 	DefaultDirectory           string                `json:"defaultDirectory,omitempty"`
 	ServerName                 string                `json:"serverName,omitempty"`
 	ServerColor                string                `json:"serverColor,omitempty"`
+	Remotes                    []remotes.Remote      `json:"remotes,omitempty"`
 	TerminalBackground         string                `json:"terminalBackground,omitempty"`
 	TerminalBackgroundLight    string                `json:"terminalBackgroundLight,omitempty"`
 	TerminalFontSize           *int                  `json:"terminalFontSize,omitempty"`
@@ -126,6 +129,9 @@ func validateSettingsGrids(value *Settings, legacy bool) error {
 		}
 	}
 	if err := validateShortcuts(value.Shortcuts); err != nil {
+		return err
+	}
+	if err := remotes.Validate(value.Remotes); err != nil {
 		return err
 	}
 	if n := value.ClosedTerminalHistoryHours; n != nil && (*n < 0 || *n > files.MaxClosedHistoryHours) {
@@ -228,6 +234,14 @@ func validateSettingsGrids(value *Settings, legacy bool) error {
 			minimized[panel.ID] = panel.Minimized
 			if panel.Path != "" && !(panel.Kind == "files" && panel.Path == files.TrashPath) && (!filepath.IsAbs(panel.Path) || len(panel.Path) > 4096) || len(panel.Terminal) > 80 {
 				return i18n.New("backend.server.invalidPanelLocation")
+			}
+			if panel.HostID != "" {
+				if remotes.Lookup(value.Remotes, panel.HostID) == nil {
+					return i18n.New("backend.server.invalidPanelLocation")
+				}
+				if len(panel.HostID) > 64 {
+					return i18n.New("backend.server.invalidPanelLocation")
+				}
 			}
 			position := PanelPosition{panel.ID, panel.X, panel.Y, panel.W, panel.H}
 			if panel.Minimized {
